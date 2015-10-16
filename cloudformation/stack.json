@@ -1,0 +1,532 @@
+{
+    "AWSTemplateFormatVersion": "2010-09-09", 
+    "Description": "AWS CloudFormation Sample Template WorkerRole: Create a multi-az, Auto Scaled worker that pulls command messages from a queue and execs the command. Each message contains a command/script to run, an input file location and an output location for the results. The application is Auto-Scaled based on the amount of work in the queue. **WARNING** This template creates one or more Amazon EC2 instances and an Amazon SQS queue. You will be billed for the AWS resources used if you create a stack from this template.", 
+    "Mappings": {
+        "AWSInstanceType2Arch": {
+            "c1.medium": {
+                "Arch": "64"
+            }, 
+            "c1.xlarge": {
+                "Arch": "64"
+            }, 
+            "cc1.4xlarge": {
+                "Arch": "64HVM"
+            }, 
+            "cc2.8xlarge": {
+                "Arch": "64HVM"
+            }, 
+            "cg1.4xlarge": {
+                "Arch": "64HVM"
+            }, 
+            "m1.large": {
+                "Arch": "64"
+            }, 
+            "m1.medium": {
+                "Arch": "64"
+            }, 
+            "m1.small": {
+                "Arch": "64"
+            }, 
+            "m1.xlarge": {
+                "Arch": "64"
+            }, 
+            "m2.2xlarge": {
+                "Arch": "64"
+            }, 
+            "m2.4xlarge": {
+                "Arch": "64"
+            }, 
+            "m2.xlarge": {
+                "Arch": "64"
+            }, 
+            "m3.2xlarge": {
+                "Arch": "64"
+            }, 
+            "m3.xlarge": {
+                "Arch": "64"
+            }, 
+            "t1.micro": {
+                "Arch": "64"
+            }
+        }, 
+        "AWSRegionArch2AMI": {
+            "ap-northeast-1": {
+                "32": "ami-0644f007", 
+                "64": "ami-0a44f00b", 
+                "64HVM": "NOT_YET_SUPPORTED"
+            }, 
+            "ap-southeast-1": {
+                "32": "ami-b4b0cae6", 
+                "64": "ami-beb0caec", 
+                "64HVM": "NOT_YET_SUPPORTED"
+            }, 
+            "ap-southeast-2": {
+                "32": "ami-b3990e89", 
+                "64": "ami-bd990e87", 
+                "64HVM": "NOT_YET_SUPPORTED"
+            }, 
+            "eu-west-1": {
+                "32": "ami-973b06e3", 
+                "64": "ami-953b06e1", 
+                "64HVM": "NOT_YET_SUPPORTED"
+            }, 
+            "sa-east-1": {
+                "32": "ami-3e3be423", 
+                "64": "ami-3c3be421", 
+                "64HVM": "NOT_YET_SUPPORTED"
+            }, 
+            "us-east-1": {
+                "32": "ami-31814f58", 
+                "64": "ami-1b814f72", 
+                "64HVM": "ami-0da96764"
+            }, 
+            "us-west-1": {
+                "32": "ami-11d68a54", 
+                "64": "ami-1bd68a5e", 
+                "64HVM": "NOT_YET_SUPPORTED"
+            }, 
+            "us-west-2": {
+                "32": "ami-38fe7308", 
+                "64": "ami-30fe7300", 
+                "64HVM": "NOT_YET_SUPPORTED"
+            }
+        }
+    }, 
+    "Outputs": {
+        "QueueURL": {
+            "Description": "URL of input queue", 
+            "Value": {
+                "Ref": "InputQueue"
+            }
+        }
+    }, 
+    "Parameters": {
+        "InstanceType": {
+            "AllowedValues": [
+                "t1.micro", 
+                "m1.small", 
+                "m1.medium", 
+                "m1.large", 
+                "m1.xlarge", 
+                "m2.xlarge", 
+                "m2.2xlarge", 
+                "m2.4xlarge", 
+                "m3.xlarge", 
+                "m3.2xlarge", 
+                "c1.medium", 
+                "c1.xlarge", 
+                "cc1.4xlarge", 
+                "cc2.8xlarge", 
+                "cg1.4xlarge"
+            ], 
+            "ConstraintDescription": "must be a valid EC2 instance type.", 
+            "Default": "m1.small", 
+            "Description": "Worker EC2 instance type", 
+            "Type": "String"
+        }, 
+        "KeyName": {
+            "AllowedPattern": "[\\x20-\\x7E]*", 
+            "ConstraintDescription": "can contain only ASCII characters.", 
+            "Description": "Name of an existing EC2 KeyPair to enable SSH access to the instances", 
+            "MaxLength": "255", 
+            "MinLength": "1", 
+            "Type": "String"
+        }, 
+        "MaxInstances": {
+            "ConstraintDescription": "Enter a number >1", 
+            "Default": "1", 
+            "Description": "The maximum number of Workers", 
+            "MinValue": "1", 
+            "Type": "Number"
+        }, 
+        "MinInstances": {
+            "ConstraintDescription": "Enter a number >=0", 
+            "Default": "0", 
+            "Description": "The minimum number of Workers", 
+            "MinValue": "0", 
+            "Type": "Number"
+        }, 
+        "SSHLocation": {
+            "AllowedPattern": "(\\d{1,3})\\.(\\d{1,3})\\.(\\d{1,3})\\.(\\d{1,3})/(\\d{1,2})", 
+            "ConstraintDescription": "must be a valid IP CIDR range of the form x.x.x.x/x.", 
+            "Default": "0.0.0.0/0", 
+            "Description": " The IP address range that can be used to SSH to the EC2 instances", 
+            "MaxLength": "18", 
+            "MinLength": "9", 
+            "Type": "String"
+        }
+    }, 
+    "Resources": {
+        "InputQueue": {
+            "Type": "AWS::SQS::Queue"
+        }, 
+        "InputQueuePolicy": {
+            "DependsOn": "LaunchConfig", 
+            "Properties": {
+                "PolicyDocument": {
+                    "Id": "ReadFromQueuePolicy", 
+                    "Statement": [
+                        {
+                            "Action": [
+                                "sqs:ReceiveMessage", 
+                                "sqs:DeleteMessage"
+                            ], 
+                            "Effect": "Allow", 
+                            "Principal": {
+                                "AWS": {
+                                    "Fn::GetAtt": [
+                                        "WorkerUser", 
+                                        "Arn"
+                                    ]
+                                }
+                            }, 
+                            "Resource": {
+                                "Fn::GetAtt": [
+                                    "InputQueue", 
+                                    "Arn"
+                                ]
+                            }, 
+                            "Sid": "ConsumeMessages"
+                        }
+                    ], 
+                    "Version": "2008-10-17"
+                }, 
+                "Queues": [
+                    {
+                        "Ref": "InputQueue"
+                    }
+                ]
+            }, 
+            "Type": "AWS::SQS::QueuePolicy"
+        }, 
+        "InstanceSecurityGroup": {
+            "Properties": {
+                "GroupDescription": "Enable SSH access", 
+                "SecurityGroupIngress": [
+                    {
+                        "CidrIp": {
+                            "Ref": "SSHLocation"
+                        }, 
+                        "FromPort": "22", 
+                        "IpProtocol": "tcp", 
+                        "ToPort": "22"
+                    }
+                ]
+            }, 
+            "Type": "AWS::EC2::SecurityGroup"
+        }, 
+        "LaunchConfig": {
+            "Metadata": {
+                "AWS::CloudFormation::Init": {
+                    "WorkerRole": {
+                        "files": {
+                            "/etc/cron.d/worker.cron": {
+                                "content": "*/1 * * * * ec2-user /home/ec2-user/worker.py &> /home/ec2-user/worker.log\n", 
+                                "group": "root", 
+                                "mode": "000644", 
+                                "owner": "root"
+                            }, 
+                            "/home/ec2-user/worker.py": {
+                                "content": {
+                                    "Fn::Join": [
+                                        "", 
+                                        [
+                                            "#!/usr/bin/python \n", 
+                                            "QUEUE_NAME            = \"", 
+                                            {
+                                                "Fn::GetAtt": [
+                                                    "InputQueue", 
+                                                    "QueueName"
+                                                ]
+                                            }, 
+                                            "\";\n", 
+                                            "print 'Hello world!'\n", 
+                                            "import json,time,os,sys\n", 
+                                            "from boto3.session import Session\n", 
+                                            "s = Session(region_name=\"us-east-1\")\n", 
+                                            "sqs = s.resource(\"sqs\")\n", 
+                                            "s3 = s.client(\"s3\")\n", 
+                                            "queue = sqs.get_queue_by_name(QueueName=QUEUE_NAME)\n", 
+                                            "cached = set()\n", 
+                                            "while True:\n", 
+                                            "    for message in queue.receive_messages():\n", 
+                                            "        print \"Starting\"\n", 
+                                            "        print message.body\n", 
+                                            "        payload = json.loads(message.body)\n", 
+                                            "        if not (payload['bucket'],payload['key']) in cached:\n", 
+                                            "            s3.download_file(payload['bucket'], payload['key'], payload['key'])\n", 
+                                            "            os.system('chmod a+x {}'.format(payload['key']))\n", 
+                                            "            cached.add((payload['bucket'],payload['key']))\n", 
+                                            "        sys.argv = [payload['key'],payload]\n", 
+                                            "        execfile(payload['key'])\n", 
+                                            "        message.delete()\n", 
+                                            "    print \"Queue empty going to sleep for a minute\"\n", 
+                                            "    time.sleep(60)\n", 
+                                            "\n"
+                                        ]
+                                    ]
+                                }, 
+                                "group": "ec2-user", 
+                                "mode": "000755", 
+                                "owner": "ec2-user"
+                            }
+                        }
+                    }, 
+                    "configSets": {
+                        "ALL": [
+                            "WorkerRole"
+                        ]
+                    }
+                }, 
+                "Comment": "Install a python app"
+            }, 
+            "Properties": {
+                "IamInstanceProfile": {
+                    "Ref": "RootInstanceProfile"
+                }, 
+                "ImageId": {
+                    "Fn::FindInMap": [
+                        "AWSRegionArch2AMI", 
+                        {
+                            "Ref": "AWS::Region"
+                        }, 
+                        {
+                            "Fn::FindInMap": [
+                                "AWSInstanceType2Arch", 
+                                {
+                                    "Ref": "InstanceType"
+                                }, 
+                                "Arch"
+                            ]
+                        }
+                    ]
+                }, 
+                "InstanceType": {
+                    "Ref": "InstanceType"
+                }, 
+                "KeyName": {
+                    "Ref": "KeyName"
+                }, 
+                "SecurityGroups": [
+                    {
+                        "Ref": "InstanceSecurityGroup"
+                    }
+                ], 
+                "SpotPrice": "0.2", 
+                "UserData": {
+                    "Fn::Base64": {
+                        "Fn::Join": [
+                            "", 
+                            [
+                                "#!/bin/bash\n", 
+                                "yum update -y aws-cfn-bootstrap\n", 
+                                "yum install -y python-pip\n", 
+                                "pip install boto\n", 
+                                "pip install boto3\n", 
+                                "# sudo /usr/local/bin/pip install awscli\n", 
+                                "# Install the Worker application\n", 
+                                "/opt/aws/bin/cfn-init ", 
+                                "         --stack ", 
+                                {
+                                    "Ref": "AWS::StackId"
+                                }, 
+                                "         --resource LaunchConfig ", 
+                                "         --configset ALL", 
+                                "         --region ", 
+                                {
+                                    "Ref": "AWS::Region"
+                                }, 
+                                "\n"
+                            ]
+                        ]
+                    }
+                }
+            }, 
+            "Type": "AWS::AutoScaling::LaunchConfiguration"
+        }, 
+        "NotEnoughMessagesAlarm": {
+            "Properties": {
+                "AlarmActions": [
+                    {
+                        "Ref": "WorkerScaleDownPolicy"
+                    }
+                ], 
+                "AlarmDescription": "Scale-down if there are too many empty polls, indicating there is not enough work", 
+                "ComparisonOperator": "GreaterThanThreshold", 
+                "Dimensions": [
+                    {
+                        "Name": "QueueName", 
+                        "Value": {
+                            "Fn::GetAtt": [
+                                "InputQueue", 
+                                "QueueName"
+                            ]
+                        }
+                    }
+                ], 
+                "EvaluationPeriods": "10", 
+                "MetricName": "NumberOfEmptyReceives", 
+                "Namespace": "AWS/SQS", 
+                "Period": "60", 
+                "Statistic": "Sum", 
+                "Threshold": "3"
+            }, 
+            "Type": "AWS::CloudWatch::Alarm"
+        }, 
+        "RootInstanceProfile": {
+            "Properties": {
+                "Path": "/", 
+                "Roles": [
+                    {
+                        "Ref": "RootRole"
+                    }
+                ]
+            }, 
+            "Type": "AWS::IAM::InstanceProfile"
+        }, 
+        "RootRole": {
+            "Properties": {
+                "AssumeRolePolicyDocument": {
+                    "Statement": [
+                        {
+                            "Action": [
+                                "sts:AssumeRole"
+                            ], 
+                            "Effect": "Allow", 
+                            "Principal": {
+                                "Service": [
+                                    "ec2.amazonaws.com"
+                                ]
+                            }
+                        }
+                    ], 
+                    "Version": "2012-10-17"
+                }, 
+                "Path": "/", 
+                "Policies": [
+                    {
+                        "PolicyDocument": {
+                            "Statement": [
+                                {
+                                    "Action": "s3:*", 
+                                    "Effect": "Allow", 
+                                    "Resource": "*"
+                                }
+                            ], 
+                            "Version": "2012-10-17"
+                        }, 
+                        "PolicyName": "roots3"
+                    }, 
+                    {
+                        "PolicyDocument": {
+                            "Statement": [
+                                {
+                                    "Action": "sqs:*", 
+                                    "Effect": "Allow", 
+                                    "Resource": "*"
+                                }
+                            ], 
+                            "Version": "2012-10-17"
+                        }, 
+                        "PolicyName": "rootsqs"
+                    }
+                ]
+            }, 
+            "Type": "AWS::IAM::Role"
+        }, 
+        "TooManyMessagesAlarm": {
+            "Properties": {
+                "AlarmActions": [
+                    {
+                        "Ref": "WorkerScaleUpPolicy"
+                    }
+                ], 
+                "AlarmDescription": "Scale-Up if queue depth grows beyond 10 messages", 
+                "ComparisonOperator": "GreaterThanThreshold", 
+                "Dimensions": [
+                    {
+                        "Name": "QueueName", 
+                        "Value": {
+                            "Fn::GetAtt": [
+                                "InputQueue", 
+                                "QueueName"
+                            ]
+                        }
+                    }
+                ], 
+                "EvaluationPeriods": "3", 
+                "MetricName": "ApproximateNumberOfMessagesVisible", 
+                "Namespace": "AWS/SQS", 
+                "Period": "60", 
+                "Statistic": "Sum", 
+                "Threshold": "1"
+            }, 
+            "Type": "AWS::CloudWatch::Alarm"
+        }, 
+        "WorkerGroup": {
+            "Properties": {
+                "AvailabilityZones": {
+                    "Fn::GetAZs": ""
+                }, 
+                "LaunchConfigurationName": {
+                    "Ref": "LaunchConfig"
+                }, 
+                "MaxSize": {
+                    "Ref": "MaxInstances"
+                }, 
+                "MinSize": {
+                    "Ref": "MinInstances"
+                }
+            }, 
+            "Type": "AWS::AutoScaling::AutoScalingGroup"
+        }, 
+        "WorkerScaleDownPolicy": {
+            "Properties": {
+                "AdjustmentType": "ChangeInCapacity", 
+                "AutoScalingGroupName": {
+                    "Ref": "WorkerGroup"
+                }, 
+                "Cooldown": "60", 
+                "ScalingAdjustment": "-1"
+            }, 
+            "Type": "AWS::AutoScaling::ScalingPolicy"
+        }, 
+        "WorkerScaleUpPolicy": {
+            "Properties": {
+                "AdjustmentType": "ChangeInCapacity", 
+                "AutoScalingGroupName": {
+                    "Ref": "WorkerGroup"
+                }, 
+                "Cooldown": "60", 
+                "ScalingAdjustment": "1"
+            }, 
+            "Type": "AWS::AutoScaling::ScalingPolicy"
+        }, 
+        "WorkerUser": {
+            "Properties": {
+                "Path": "/", 
+                "Policies": [
+                    {
+                        "PolicyDocument": {
+                            "Statement": [
+                                {
+                                    "Action": [
+                                        "cloudformation:DescribeStackResource", 
+                                        "sqs:ReceiveMessage", 
+                                        "sqs:DeleteMessage", 
+                                        "sns:Publish", 
+                                        "s3:*"
+                                    ], 
+                                    "Effect": "Allow", 
+                                    "Resource": "*"
+                                }
+                            ]
+                        }, 
+                        "PolicyName": "root"
+                    }
+                ]
+            }, 
+            "Type": "AWS::IAM::User"
+        }
+    }
+}

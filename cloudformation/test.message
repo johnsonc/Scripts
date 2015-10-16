@@ -1,0 +1,6 @@
+{
+"bucket":"aub3data",
+"key":"test.py",
+"optional":"arguments",
+"any":10
+}
